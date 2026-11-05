@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "document_collaborators_document_user_unique" ON "document_collaborators" USING btree ("document_id","user_id");
