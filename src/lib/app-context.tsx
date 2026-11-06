@@ -1,7 +1,9 @@
 ﻿import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CURRENT_USER, uid, type Collaborator, type DocItem, type DocType, type Toast, type ViewKey } from "./store";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
+const API_BASE_URL = import.meta.env.DEV
+  ? import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000"
+  : "";
 
 type SaveStatus = "saving" | "saved" | "error";
 type AppUser = typeof CURRENT_USER & { id?: string };

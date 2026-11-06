@@ -42,7 +42,7 @@ Use Node.js 20 or newer and npm. The API needs a PostgreSQL connection string; N
 5. In one terminal run `npm run dev:server`; in another run `npm run dev`.
 6. Open the Vite URL printed in the terminal (normally `http://localhost:5173`).
 
-Do not commit `.env` or paste credentials into source code. For a non-local frontend origin, set `CLIENT_URL` to that exact origin. The frontend defaults its API URL to `http://localhost:4000`; set `VITE_API_BASE_URL` at Vite build time when the API is elsewhere.
+Do not commit `.env` or paste credentials into source code. For a non-local frontend origin, set `CLIENT_URL` to that exact origin. Local Vite development defaults its API URL to `http://localhost:4000` (or uses the optional `VITE_API_BASE_URL` override); production builds always use same-origin `/api` requests and ignore that override.
 
 ## Environment variables
 
@@ -112,11 +112,14 @@ There is no configured frontend unit-test runner or separate authentication/docu
 
 ## Deployment
 
-Deployment has not been performed or verified. For a deployment:
+Deployment has not been performed or verified. The root [vercel.json](./vercel.json) configures Vercel Services (currently Beta) with the Vite frontend rooted at `.` and the Express backend rooted at `server/`. Requests under `/api/` route to the backend; other requests route to the frontend, whose service rewrite supports SPA deep links.
 
-- Frontend (Vercel): configure `VITE_API_BASE_URL` to the Render API origin, then run `npm run build`.
-- Backend (Render): use `npm --prefix server run build` as the build command and `npm --prefix server start` as the start command; set `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=production`, `PORT` (if required by the host), and `CLIENT_URL`.
-- Run `npm run db:migrate` against the deployment database before serving traffic.
-- Use HTTPS for the frontend and API; configure the exact frontend origin for credentialed CORS.
+Before deploying:
 
-No live URLs are listed because deployment has not been tested.
+- Connect this repository to a Vercel project with the repository root as the project root.
+- Set `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=production`, and `CLIENT_URL` in the Vercel project environment. Use the same public origin for `CLIENT_URL`; do not store secrets in `vercel.json`.
+- Leave `VITE_API_BASE_URL` unset to use same-origin `/api` routes, or set it only when intentionally using a separate API origin.
+- Apply Drizzle migrations to the Neon database with `npm run db:migrate` before serving traffic.
+- Verify signup, login, cookies, database access, and SPA deep links on a Vercel preview before promoting a production deployment.
+
+Vercel deployment and the production cookie/CORS behavior have not been tested. No live URLs are listed.
