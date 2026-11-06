@@ -117,6 +117,7 @@ Deployment has not been performed or verified. The root [vercel.json](./vercel.j
 Before deploying:
 
 - Connect this repository to a Vercel project with the repository root as the project root.
+- The backend service builds with `npm run build` and runs the emitted ES module at `dist/src/index.js`; keep the service root set to `server/`.
 - Set `DATABASE_URL`, `JWT_SECRET`, `NODE_ENV=production`, and `CLIENT_URL` in the Vercel project environment. Use the same public origin for `CLIENT_URL`; do not store secrets in `vercel.json`.
 - Leave `VITE_API_BASE_URL` unset to use same-origin `/api` routes, or set it only when intentionally using a separate API origin.
 - Apply Drizzle migrations to the Neon database with `npm run db:migrate` before serving traffic.

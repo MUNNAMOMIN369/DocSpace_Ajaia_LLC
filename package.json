@@ -8,6 +8,7 @@
     "dev:server": "npm --prefix server run dev",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
+    "test": "npm run test:sharing",
     "build:server": "npm --prefix server run build",
     "preview": "vite preview",
     "typecheck:server": "npm --prefix server run typecheck",

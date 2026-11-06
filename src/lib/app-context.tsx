@@ -7,6 +7,11 @@ const API_BASE_URL = import.meta.env.DEV
 
 type SaveStatus = "saving" | "saved" | "error";
 type AppUser = typeof CURRENT_USER & { id?: string };
+type ApiResponse = {
+  message?: string;
+  user?: Partial<AppUser>;
+  [key: string]: unknown;
+};
 
 interface AppState {
   authenticated: boolean;
@@ -126,6 +131,40 @@ function stripHtml(value: string): string {
   return value.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
 }
 
+async function readApiResponse(response: Response): Promise<ApiResponse> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = await response.text();
+
+  if (!contentType.toLowerCase().includes("application/json")) {
+    const message = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
+    throw new Error(
+      message
+        ? `API returned a non-JSON response (HTTP ${response.status}): ${message}`
+        : `API returned a non-JSON response (HTTP ${response.status}).`
+    );
+  }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new Error(`API returned invalid JSON (HTTP ${response.status}).`);
+  }
+
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`API returned an unexpected JSON response (HTTP ${response.status}).`);
+  }
+
+  const result = data as ApiResponse;
+  if (!response.ok) {
+    throw new Error(
+      typeof result.message === "string" ? result.message : `API request failed (HTTP ${response.status}).`
+    );
+  }
+
+  return result;
+}
+
 function normalizeDoc(data: any): DocItem {
   const content = typeof data.content === "string" ? data.content : "";
   const text = stripHtml(content);
@@ -216,7 +255,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setDocs([]);
         return;
       }
-      const data = await response.json();
+      const data = await readApiResponse(response);
       setUser({ ...CURRENT_USER, ...(data.user ?? {}) });
       setAuthenticated(true);
       await hydrateDocs();
@@ -247,10 +286,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }),
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.message ?? "Authentication failed.");
-      }
+      const data = await readApiResponse(response);
 
       setUser({ ...CURRENT_USER, ...(data.user ?? {}) });
       setAuthenticated(true);
