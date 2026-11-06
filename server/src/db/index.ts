@@ -12,7 +12,7 @@ export const pool = new Pool({
 
 export const db = drizzle(pool, {
   schema,
-  logger: env.NODE_ENV === "development",
+  logger: false,
 });
 
 export async function verifyDatabaseConnection(): Promise<void> {

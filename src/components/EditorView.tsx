@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlignCenter, AlignLeft, AlignRight, ArrowLeft, Bold, Check, Code, Heading1, Heading2, Heading3,
   Italic, Link2, List, ListOrdered, MoreHorizontal, Quote, Redo, Share2, Star, Strikethrough,
-  Underline, Undo, ChevronDown,
+  Underline, Undo, ChevronDown, Download, Minus, Plus, RotateCcw,
 } from "lucide-react";
 import { useApp } from "../lib/app-context";
 import { timeAgo } from "../lib/store";
-import { AvatarStack, Dropdown, MenuDivider, MenuItem, Spinner } from "./ui";
+import { AvatarStack, Dropdown, MenuDivider, MenuItem, MenuLabel, Spinner } from "./ui";
 import { cn } from "../utils/cn";
 
 function ToolButton({
@@ -30,14 +30,23 @@ function Divider() {
   return <div className="mx-1 h-5 w-px bg-border" />;
 }
 
+function unwrapPlainSpans(root: ParentNode) {
+  [...root.querySelectorAll("span")].reverse().forEach((span) => {
+    if (span.attributes.length === 0) span.replaceWith(...span.childNodes);
+  });
+}
+
 export default function EditorView({ docId }: { docId: string }) {
-  const { docs, user, closeDoc, updateDoc, toggleStar, setShareDocId, saveStatus, lastSavedAt, deleteDoc, duplicateDoc } = useApp();
+  const { docs, user, closeDoc, updateDoc, toggleStar, setShareDocId, saveStatus, lastSavedAt, deleteDoc, duplicateDoc, exportDoc } = useApp();
   const doc = docs.find((d) => d.id === docId);
   const canEdit = doc?.collaborators.some((collaborator) => collaborator.email === user.email && ["owner", "editor"].includes(collaborator.role)) ?? false;
   const isOwner = doc?.collaborators.some((collaborator) => collaborator.email === user.email && collaborator.role === "owner") ?? false;
+  const isSpreadsheet = doc?.type === "sheet";
+  const usesRichTextFallback = doc?.type === "slides" || doc?.type === "whiteboard" || doc?.type === "pdf";
   const editorRef = useRef<HTMLDivElement>(null);
   const [title, setTitle] = useState("");
   const [activeMarks, setActiveMarks] = useState<Record<string, boolean>>({});
+  const [selectedFontSize, setSelectedFontSize] = useState(16);
   const [wordCount, setWordCount] = useState(0);
   const saveTimer = useRef<number | null>(null);
 
@@ -65,11 +74,27 @@ export default function EditorView({ docId }: { docId: string }) {
           ul: document.queryCommandState("insertUnorderedList"),
           ol: document.queryCommandState("insertOrderedList"),
         });
+        const selection = window.getSelection();
+        const anchor = selection?.anchorNode;
+        if (anchor && editorRef.current?.contains(anchor)) {
+          const element = anchor.nodeType === Node.ELEMENT_NODE ? anchor as Element : anchor.parentElement;
+          const computedSize = element ? Number.parseFloat(window.getComputedStyle(element).fontSize) : NaN;
+          if (Number.isFinite(computedSize)) setSelectedFontSize(computedSize);
+        }
       } catch { /* noop */ }
     };
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
+
+  const toc = useMemo(() => {
+    if (!doc || !editorRef.current) return [];
+    const matches = [...doc.content.matchAll(/<h([123])>(.*?)<\/h\1>/gi)].map((m) => ({
+      level: Number(m[1]),
+      text: m[2].replace(/<[^>]+>/g, "").slice(0, 60),
+    }));
+    return matches.slice(0, 8);
+  }, [doc?.content]);
 
   if (!doc) {
     return (
@@ -110,6 +135,75 @@ export default function EditorView({ docId }: { docId: string }) {
     if (editorRef.current) scheduleSave(editorRef.current.innerHTML);
   };
 
+  const changeFontSize = (change: number | "reset") => {
+    if (!canEdit) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const editor = editorRef.current;
+    if (!selection || !range || range.collapsed || !editor?.contains(range.commonAncestorContainer)) return;
+
+    const commonElement = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer as Element
+      : range.commonAncestorContainer.parentElement;
+    const selectedText = selection.toString();
+    const currentSpan = [...editor.querySelectorAll<HTMLElement>("span[style*='font-size']")]
+      .filter((span) =>
+        span.textContent === selectedText
+        && span.contains(range.startContainer)
+        && span.contains(range.endContainer)
+      )
+      .sort((left, right) => {
+        const depth = (element: Element) => {
+          let count = 0;
+          for (let parent = element.parentElement; parent && parent !== editor; parent = parent.parentElement) count += 1;
+          return count;
+        };
+        return depth(left) - depth(right);
+      })[0];
+    if (currentSpan) {
+      const inheritedSize = Number.parseFloat(window.getComputedStyle(currentSpan.parentElement ?? editor).fontSize) || 16;
+      currentSpan.querySelectorAll<HTMLElement>("[style]").forEach((element) => {
+        element.style.removeProperty("font-size");
+        if (!element.getAttribute("style")) element.removeAttribute("style");
+      });
+      unwrapPlainSpans(currentSpan);
+      if (change === "reset") {
+        currentSpan.style.removeProperty("font-size");
+        if (!currentSpan.getAttribute("style")) currentSpan.removeAttribute("style");
+        if (currentSpan.attributes.length === 0) currentSpan.replaceWith(...currentSpan.childNodes);
+      } else {
+        currentSpan.style.fontSize = `${Math.max(10, Math.min(48, selectedFontSize + change))}px`;
+      }
+      const actualSize = change === "reset"
+        ? inheritedSize
+        : Number.parseFloat(window.getComputedStyle(currentSpan).fontSize) || 16;
+      setSelectedFontSize(actualSize);
+      scheduleSave(editor.innerHTML);
+      return;
+    }
+
+    const existingFontSpan = commonElement?.closest<HTMLElement>("span[style*='font-size']");
+    const inheritedSize = Number.parseFloat(window.getComputedStyle(existingFontSpan?.parentElement ?? commonElement ?? editor).fontSize) || 16;
+    const fragment = range.extractContents();
+    fragment.querySelectorAll<HTMLElement>("[style]").forEach((element) => {
+      element.style.removeProperty("font-size");
+      if (!element.getAttribute("style")) element.removeAttribute("style");
+    });
+    unwrapPlainSpans(fragment);
+    const span = document.createElement("span");
+    const nextSize = change === "reset" ? inheritedSize : Math.max(10, Math.min(48, selectedFontSize + change));
+    span.style.fontSize = `${nextSize}px`;
+    span.append(fragment);
+    range.insertNode(span);
+
+    const updatedRange = document.createRange();
+    updatedRange.selectNodeContents(span);
+    selection.removeAllRanges();
+    selection.addRange(updatedRange);
+    setSelectedFontSize(nextSize);
+    scheduleSave(editor.innerHTML);
+  };
+
   const insertHeading = (level: 1 | 2 | 3) => exec("formatBlock", `h${level}`);
   const insertLink = () => {
     const url = window.prompt("Enter link URL", "https://");
@@ -131,16 +225,6 @@ export default function EditorView({ docId }: { docId: string }) {
   };
 
   const readMins = Math.max(1, Math.round(wordCount / 200));
-
-  const toc = useMemo(() => {
-    if (!editorRef.current) return [];
-    // derive from content string headings
-    const matches = [...doc.content.matchAll(/<h([123])>(.*?)<\/h\1>/gi)].map((m) => ({
-      level: Number(m[1]),
-      text: m[2].replace(/<[^>]+>/g, "").slice(0, 60),
-    }));
-    return matches.slice(0, 8);
-  }, [doc.content]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -187,6 +271,18 @@ export default function EditorView({ docId }: { docId: string }) {
                 if (window.confirm("Delete this document permanently? This cannot be undone.") && await deleteDoc(doc.id)) closeDoc();
               }} />
             </Dropdown>}
+            <Dropdown
+              trigger={<button className="btn-secondary focus-ring flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold" aria-label="Export document"><Download className="h-4 w-4" /><span className="hidden sm:inline">Export</span></button>}
+              width="w-52"
+            >
+              <MenuLabel>Export as</MenuLabel>
+              {(isSpreadsheet
+                ? [{ format: "csv" as const, label: "CSV" }, { format: "xlsx" as const, label: "Excel workbook" }, { format: "pdf" as const, label: "PDF" }]
+                : [{ format: "txt" as const, label: "Plain text" }, { format: "md" as const, label: "Markdown" }, { format: "html" as const, label: "HTML" }, { format: "pdf" as const, label: "PDF" }, { format: "docx" as const, label: "Word document" }]
+              ).map(({ format, label }) => (
+                <MenuItem key={format} label={label} onClick={() => void exportDoc(doc.id, format)} />
+              ))}
+            </Dropdown>
             <button onClick={() => setShareDocId(doc.id)} className="btn-primary focus-ring flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-[13.5px] font-bold">
               <Share2 className="h-4 w-4" /> Share
             </button>
@@ -220,6 +316,11 @@ export default function EditorView({ docId }: { docId: string }) {
           <ToolButton icon={<Strikethrough className="h-4 w-4" />} label="Strikethrough" active={activeMarks.strike} onClick={() => exec("strikeThrough")} />
           <ToolButton icon={<Code className="h-4 w-4" />} label="Code" onClick={insertCode} />
           <Divider />
+          <ToolButton icon={<Minus className="h-4 w-4" />} label="Decrease font size" disabled={selectedFontSize <= 10} onClick={() => changeFontSize(-1)} />
+          <span className="min-w-[42px] text-center text-[11px] font-semibold text-text-secondary" aria-live="polite">{Math.round(selectedFontSize)} px</span>
+          <ToolButton icon={<Plus className="h-4 w-4" />} label="Increase font size" disabled={selectedFontSize >= 48} onClick={() => changeFontSize(1)} />
+          <ToolButton icon={<RotateCcw className="h-4 w-4" />} label="Reset font size" onClick={() => changeFontSize("reset")} />
+          <Divider />
           <ToolButton icon={<AlignLeft className="h-4 w-4" />} label="Align left" onClick={() => exec("justifyLeft")} />
           <ToolButton icon={<AlignCenter className="h-4 w-4" />} label="Align center" onClick={() => exec("justifyCenter")} />
           <ToolButton icon={<AlignRight className="h-4 w-4" />} label="Align right" onClick={() => exec("justifyRight")} />
@@ -235,6 +336,18 @@ export default function EditorView({ docId }: { docId: string }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[1080px] gap-6 px-4 py-6 sm:px-6 lg:py-8">
           <div className="min-w-0 flex-1">
+            {isSpreadsheet && (
+              <p className="mb-3 rounded-xl border border-orange-border/50 bg-primary-light px-4 py-3 text-[13px] text-primary-active" role="note">
+                Basic spreadsheet: table cells are editable and autosaved. Formula calculations are not supported.
+              </p>
+            )}
+            {usesRichTextFallback && (
+              <p className="mb-3 rounded-xl border border-border bg-white px-4 py-3 text-[13px] text-text-secondary" role="note">
+                {doc.type === "slides" && "This presentation is an editable text outline; slide layouts and presenting are not supported."}
+                {doc.type === "whiteboard" && "This is an editable text-based board; drawing tools and freeform canvas are not supported."}
+                {doc.type === "pdf" && "PDF preview is not supported; this item is shown in the rich-text editor."}
+              </p>
+            )}
             <div className="rounded-2xl border border-border bg-white px-6 py-8 shadow-[0_24px_64px_-24px_rgba(23,36,58,0.18)] sm:px-12 sm:py-12">
               <div className="mb-6 flex flex-wrap items-center gap-2 border-b border-border pb-5">
                 {doc.tags.map((t) => (

@@ -157,11 +157,14 @@ try {
 
   console.log("SHARING INTEGRATION TESTS PASSED");
 } finally {
-  if (process.env.DATABASE_URL) {
-    if (documentId) {
-      await pool.query("DELETE FROM documents WHERE id = $1", [documentId]);
+  try {
+    if (process.env.DATABASE_URL) {
+      if (documentId) {
+        await pool.query("DELETE FROM documents WHERE id = $1", [documentId]);
+      }
+      await pool.query("DELETE FROM users WHERE email = ANY($1::text[])", [[alice.email, bob.email]]);
     }
-    await pool.query("DELETE FROM users WHERE email = ANY($1::text[])", [[alice.email, bob.email]]);
+  } finally {
+    await pool.end();
   }
-  await pool.end();
 }

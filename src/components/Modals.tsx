@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   Check, FileText, FileUp, Globe, Mail, Plus,
   Presentation, FileSpreadsheet, StickyNote, Upload, X, LayoutGrid, ChevronDown, ShieldCheck, Loader2,
@@ -25,26 +25,22 @@ function ModalShell({ open, onClose, children, width = "max-w-lg", labelledBy }:
   }, [open, onClose]);
 
   return (
-    <AnimatePresence>
-      {open && (
-        <div className="fixed inset-0 z-[60] flex items-end justify-center p-0 sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
-            onClick={onClose}
-            className="absolute inset-0 bg-[#17243A]/45 backdrop-blur-[6px]"
-          />
-          <motion.div
-            initial={{ opacity: 0, y: 24, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.97 }}
-            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-            className={cn("glass-strong relative max-h-[92vh] w-full overflow-y-auto rounded-t-3xl sm:rounded-3xl", width)}
-          >
-            {children}
-          </motion.div>
-        </div>
-      )}
-    </AnimatePresence>
+    open && (
+      <div className="fixed inset-0 z-[60] flex items-end justify-center p-0 sm:items-center sm:p-6" role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
+        <div
+          onClick={onClose}
+          className="absolute inset-0 bg-[#17243A]/45 backdrop-blur-[6px]"
+        />
+        <motion.div
+          initial={{ opacity: 0, y: 24, scale: 0.97 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          className={cn("glass-strong relative max-h-[92vh] w-full overflow-y-auto rounded-t-3xl sm:rounded-3xl", width)}
+        >
+          {children}
+        </motion.div>
+      </div>
+    )
   );
 }
 
@@ -66,20 +62,32 @@ function ModalHeader({ title, desc, onClose, id }: { title: string; desc?: strin
 const CREATE_TYPES: { type: DocType; label: string; desc: string; icon: typeof FileText }[] = [
   { type: "doc", label: "Document", desc: "Rich text, headings & media", icon: FileText },
   { type: "note", label: "Quick note", desc: "Capture ideas instantly", icon: StickyNote },
-  { type: "slides", label: "Presentation", desc: "A lightweight deck", icon: Presentation },
-  { type: "sheet", label: "Spreadsheet", desc: "Tables & calculations", icon: FileSpreadsheet },
-  { type: "whiteboard", label: "Whiteboard", desc: "Brainstorm visually", icon: LayoutGrid },
+  { type: "slides", label: "Presentation outline", desc: "Editable outline; not slide-rendered", icon: Presentation },
+  { type: "sheet", label: "Spreadsheet", desc: "Editable table; formulas unavailable", icon: FileSpreadsheet },
+  { type: "whiteboard", label: "Whiteboard notes", desc: "Editable text; not a drawing canvas", icon: LayoutGrid },
 ];
 
 export function CreateModal() {
   const { createOpen, setCreateOpen, createDoc } = useApp();
   const [title, setTitle] = useState("");
   const [type, setType] = useState<DocType>("doc");
+  const [creating, setCreating] = useState(false);
 
-  const submit = () => {
-    createDoc({ title: title.trim() || `Untitled ${CREATE_TYPES.find((t) => t.type === type)?.label.toLowerCase()}`, type });
-    setTitle("");
-    setCreateOpen(false);
+  const submit = async () => {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const created = await createDoc({
+        title: title.trim() || `Untitled ${CREATE_TYPES.find((t) => t.type === type)?.label.toLowerCase()}`,
+        type,
+      });
+      if (created) {
+        setTitle("");
+        setCreateOpen(false);
+      }
+    } finally {
+      setCreating(false);
+    }
   };
 
   return (
@@ -92,7 +100,8 @@ export function CreateModal() {
             autoFocus
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
+            onKeyDown={(e) => e.key === "Enter" && void submit()}
+            disabled={creating}
             placeholder="e.g. Q4 Roadmap, Meeting notes…"
             className="input-premium focus-ring w-full rounded-xl px-3.5 py-2.5 text-[14px]"
           />
@@ -104,6 +113,7 @@ export function CreateModal() {
               <button
                 key={t.type}
                 onClick={() => setType(t.type)}
+                disabled={creating}
                 aria-pressed={type === t.type}
                 className={cn(
                   "focus-ring flex items-center gap-3 rounded-xl border p-3 text-left transition-all duration-200",
@@ -132,9 +142,10 @@ export function CreateModal() {
           </div>
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button onClick={() => setCreateOpen(false)} className="btn-secondary focus-ring rounded-xl px-4 py-2.5 text-[13.5px] font-semibold">Cancel</button>
-          <button onClick={submit} className="btn-primary focus-ring flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[13.5px] font-bold">
-            <Plus className="h-4 w-4" strokeWidth={2.75} /> Create Document
+          <button onClick={() => setCreateOpen(false)} disabled={creating} className="btn-secondary focus-ring rounded-xl px-4 py-2.5 text-[13.5px] font-semibold disabled:opacity-50">Cancel</button>
+          <button onClick={() => void submit()} disabled={creating} className="btn-primary focus-ring flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-[13.5px] font-bold">
+            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" strokeWidth={2.75} />}
+            {creating ? "Creating…" : "Create Document"}
           </button>
         </div>
       </div>

@@ -1,6 +1,11 @@
 import type { Request, Response, Router } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import { load } from "cheerio";
+import ExcelJS from "exceljs";
+import htmlToDocx from "html-to-docx";
+import PDFDocument from "pdfkit";
+import TurndownService from "turndown";
 import { db } from "../db/index.js";
 import { documentCollaborators, documentPermissions, documents, users } from "../db/schema.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
@@ -9,7 +14,7 @@ import { requireAuth } from "../middleware/auth.js";
 const documentSchema = z.object({
   title: z.string().trim().min(1, "Title is required.").optional(),
   content: z.string().optional(),
-  type: z.string().min(1).optional(),
+  type: z.enum(["doc", "sheet", "slides", "pdf", "note", "whiteboard"]).optional(),
   excerpt: z.string().optional(),
 });
 const collaboratorSchema = z.object({
@@ -19,6 +24,78 @@ const collaboratorSchema = z.object({
 const collaboratorRoleSchema = z.object({
   role: z.enum(["editor", "viewer"]),
 });
+const EXPORTS = {
+  txt: { mime: "text/plain; charset=utf-8", extension: "txt" },
+  md: { mime: "text/markdown; charset=utf-8", extension: "md" },
+  html: { mime: "text/html; charset=utf-8", extension: "html" },
+  pdf: { mime: "application/pdf", extension: "pdf" },
+  docx: { mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", extension: "docx" },
+  csv: { mime: "text/csv; charset=utf-8", extension: "csv" },
+  xlsx: { mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", extension: "xlsx" },
+} as const;
+type ExportFormat = keyof typeof EXPORTS;
+
+function isExportFormat(value: string): value is ExportFormat {
+  return value in EXPORTS;
+}
+
+function safeFilename(title: string, extension: string): string {
+  const basename = title.normalize("NFKC").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/g, "").trim();
+  return `${(basename || "document").slice(0, 100)}.${extension}`;
+}
+
+function getExportHtml(content: string): string {
+  const $ = load(`<div>${content}</div>`);
+  $("script, style, iframe, object, embed, img, video, audio, source").remove();
+  $("*").each((_, element) => {
+    if (!("attribs" in element)) return;
+    const node = $(element);
+    for (const attribute of Object.keys(element.attribs)) {
+      if (attribute.toLowerCase().startsWith("on")) node.removeAttr(attribute);
+    }
+    if (node.is("a")) {
+      const href = node.attr("href")?.trim() ?? "";
+      if (href && !/^(https?:|mailto:|\/|#)/i.test(href)) node.removeAttr("href");
+    }
+  });
+  return $("div").first().html() ?? "";
+}
+
+function spreadsheetRows(html: string): string[][] {
+  const $ = load(html);
+  const rows = $("table tr").toArray().map((row) =>
+    $(row).find("th, td").toArray().map((cell) => $(cell).text().trim())
+  ).filter((row) => row.length > 0);
+  return rows.length ? rows : [[$.root().text().trim()]];
+}
+
+function csvCell(value: string): string {
+  const safeValue = /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+  return `"${safeValue.replace(/"/g, '""')}"`;
+}
+
+function htmlText(html: string): string {
+  const $ = load(html);
+  $("br").replaceWith("\n");
+  $("p, h1, h2, h3, li, tr, blockquote, pre").each((_, element) => {
+    $(element).append("\n");
+  });
+  return $.root().text().replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function createPdf(title: string, text: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({ margin: 54, bufferPages: true });
+    const chunks: Buffer[] = [];
+    pdf.on("data", (chunk: Buffer) => chunks.push(chunk));
+    pdf.on("error", reject);
+    pdf.on("end", () => resolve(Buffer.concat(chunks)));
+    pdf.fontSize(20).text(title, { continued: false });
+    pdf.moveDown();
+    pdf.fontSize(11).text(text || " ");
+    pdf.end();
+  });
+}
 
 function stripHtml(value: string): string {
   return value
@@ -38,18 +115,20 @@ function getWordCount(content: string): number {
   return text ? text.split(/\s+/).filter(Boolean).length : 0;
 }
 
-async function serializeDocument(doc: typeof documents.$inferSelect, ownerName: string, ownerEmail: string, viewerId: string): Promise<Record<string, unknown>> {
-  const collaborators = await db
-    .select({
-      id: users.id,
-      name: users.name,
-      email: users.email,
-      role: documentCollaborators.role,
-    })
-    .from(documentCollaborators)
-    .innerJoin(users, eq(users.id, documentCollaborators.userId))
-    .where(eq(documentCollaborators.documentId, doc.id));
+type SerializedCollaborator = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+};
 
+function serializeDocument(
+  doc: typeof documents.$inferSelect,
+  ownerName: string,
+  ownerEmail: string,
+  viewerId: string,
+  collaborators: SerializedCollaborator[]
+): Record<string, unknown> {
   return {
     id: doc.id,
     title: doc.title,
@@ -82,6 +161,35 @@ async function serializeDocument(doc: typeof documents.$inferSelect, ownerName: 
     readMinutes: Math.max(1, Math.ceil(getWordCount(doc.content) / 180)),
     cover: null,
   };
+}
+
+async function serializeDocuments(
+  entries: Array<{ doc: typeof documents.$inferSelect; owner: { id: string; name: string; email: string } }>,
+  viewerId: string
+): Promise<Record<string, unknown>[]> {
+  if (entries.length === 0) return [];
+  const documentIds = entries.map(({ doc }) => doc.id);
+  const rows = await db
+    .select({
+      documentId: documentCollaborators.documentId,
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: documentCollaborators.role,
+    })
+    .from(documentCollaborators)
+    .innerJoin(users, eq(users.id, documentCollaborators.userId))
+    .where(inArray(documentCollaborators.documentId, documentIds));
+  const collaboratorsByDocument = new Map<string, SerializedCollaborator[]>();
+  for (const row of rows) {
+    const collaborators = collaboratorsByDocument.get(row.documentId) ?? [];
+    collaborators.push({ id: row.id, name: row.name, email: row.email, role: row.role });
+    collaboratorsByDocument.set(row.documentId, collaborators);
+  }
+
+  return entries.map(({ doc, owner }) =>
+    serializeDocument(doc, owner.name, owner.email, viewerId, collaboratorsByDocument.get(doc.id) ?? [])
+  );
 }
 
 async function getDocumentForUser(userId: string, documentId: string): Promise<{ doc: typeof documents.$inferSelect; owner: { id: string; name: string; email: string }; permission: string | null; collaboratorRole: string | null; canRead: boolean; canWrite: boolean }> {
@@ -162,29 +270,55 @@ async function getCollaboratorList(documentId: string, ownerId: string) {
 export function registerDocumentRoutes(router: Router): void {
   router.use(requireAuth);
 
+  router.get("/storage", asyncHandler(async (req: Request, res: Response) => {
+    const rows = await db
+      .select({
+        type: documents.type,
+        documentCount: sql<number>`count(*)`,
+        bytes: sql<number>`sum(octet_length(${documents.title}) + octet_length(${documents.content}) + octet_length(coalesce(${documents.excerpt}, '')))`,
+      })
+      .from(documents)
+      .where(eq(documents.ownerId, req.user!.id))
+      .groupBy(documents.type);
+    const byType = Object.fromEntries(rows.map((row) => [row.type, {
+      documentCount: Number(row.documentCount),
+      bytes: Number(row.bytes ?? 0),
+    }]));
+    res.json({
+      ok: true,
+      storage: {
+        documentCount: rows.reduce((total, row) => total + Number(row.documentCount), 0),
+        bytes: rows.reduce((total, row) => total + Number(row.bytes ?? 0), 0),
+        byType,
+        basis: "UTF-8 bytes of owned document titles, content and excerpts; excludes database overhead and shared-in documents.",
+      },
+    });
+  }));
+
   router.get("/", asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id;
 
-    const ownedDocs = await db.select().from(documents).where(eq(documents.ownerId, userId));
-    const sharedDocs = await db
-      .select({
-        doc: documents,
-        owner: { id: users.id, name: users.name, email: users.email },
-      })
-      .from(documentPermissions)
-      .innerJoin(documents, eq(documents.id, documentPermissions.documentId))
-      .innerJoin(users, eq(users.id, documents.ownerId))
-      .where(eq(documentPermissions.userId, userId));
-
-    const collaboratorDocs = await db
-      .select({
-        doc: documents,
-        owner: { id: users.id, name: users.name, email: users.email },
-      })
-      .from(documentCollaborators)
-      .innerJoin(documents, eq(documents.id, documentCollaborators.documentId))
-      .innerJoin(users, eq(users.id, documents.ownerId))
-      .where(eq(documentCollaborators.userId, userId));
+    const [ownedDocs, sharedDocs, collaboratorDocs] = await Promise.all([
+      db.select().from(documents).where(eq(documents.ownerId, userId)),
+      db
+        .select({
+          doc: documents,
+          owner: { id: users.id, name: users.name, email: users.email },
+        })
+        .from(documentPermissions)
+        .innerJoin(documents, eq(documents.id, documentPermissions.documentId))
+        .innerJoin(users, eq(users.id, documents.ownerId))
+        .where(eq(documentPermissions.userId, userId)),
+      db
+        .select({
+          doc: documents,
+          owner: { id: users.id, name: users.name, email: users.email },
+        })
+        .from(documentCollaborators)
+        .innerJoin(documents, eq(documents.id, documentCollaborators.documentId))
+        .innerJoin(users, eq(users.id, documents.ownerId))
+        .where(eq(documentCollaborators.userId, userId)),
+    ]);
 
     const merged = new Map<string, { doc: typeof documents.$inferSelect; owner: { id: string; name: string; email: string } }>();
 
@@ -201,36 +335,36 @@ export function registerDocumentRoutes(router: Router): void {
 
     const docsList = Array.from(merged.values())
       .sort((a, b) => new Date(b.doc.updatedAt).getTime() - new Date(a.doc.updatedAt).getTime());
-    const serializedDocs = await Promise.all(docsList.map(({ doc, owner }) => serializeDocument(doc, owner.name, owner.email, userId)));
+    const serializedDocs = await serializeDocuments(docsList, userId);
 
     res.json({ ok: true, documents: serializedDocs });
   }));
 
   router.get("/shared", asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.id;
-    const rows = await db
-      .select({
-        doc: documents,
-        owner: { id: users.id, name: users.name, email: users.email },
-      })
-      .from(documentCollaborators)
-      .innerJoin(documents, eq(documents.id, documentCollaborators.documentId))
-      .innerJoin(users, eq(users.id, documents.ownerId))
-      .where(eq(documentCollaborators.userId, userId));
-    const legacyRows = await db
-      .select({
-        doc: documents,
-        owner: { id: users.id, name: users.name, email: users.email },
-      })
-      .from(documentPermissions)
-      .innerJoin(documents, eq(documents.id, documentPermissions.documentId))
-      .innerJoin(users, eq(users.id, documents.ownerId))
-      .where(eq(documentPermissions.userId, userId));
+    const [rows, legacyRows] = await Promise.all([
+      db
+        .select({
+          doc: documents,
+          owner: { id: users.id, name: users.name, email: users.email },
+        })
+        .from(documentCollaborators)
+        .innerJoin(documents, eq(documents.id, documentCollaborators.documentId))
+        .innerJoin(users, eq(users.id, documents.ownerId))
+        .where(eq(documentCollaborators.userId, userId)),
+      db
+        .select({
+          doc: documents,
+          owner: { id: users.id, name: users.name, email: users.email },
+        })
+        .from(documentPermissions)
+        .innerJoin(documents, eq(documents.id, documentPermissions.documentId))
+        .innerJoin(users, eq(users.id, documents.ownerId))
+        .where(eq(documentPermissions.userId, userId)),
+    ]);
     const merged = new Map<string, (typeof rows)[number]>();
     for (const row of [...rows, ...legacyRows]) merged.set(row.doc.id, row);
-    const shared = await Promise.all(
-      Array.from(merged.values()).map(({ doc, owner }) => serializeDocument(doc, owner.name, owner.email, userId))
-    );
+    const shared = await serializeDocuments(Array.from(merged.values()), userId);
     res.json({ ok: true, documents: shared });
   }));
 
@@ -255,12 +389,9 @@ export function registerDocumentRoutes(router: Router): void {
       })
       .returning();
 
-    const owner = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-    const ownerRecord = owner[0];
-
     res.status(201).json({
       ok: true,
-      document: await serializeDocument(created, ownerRecord.name, ownerRecord.email, userId),
+      document: serializeDocument(created, req.user!.name, req.user!.email, userId, []),
     });
   }));
 
@@ -344,12 +475,62 @@ export function registerDocumentRoutes(router: Router): void {
     res.json({ ok: true, collaborators: await getCollaboratorList(documentId, owner.ownerId) });
   }));
 
+  router.get("/:id/export/:format", asyncHandler(async (req: Request, res: Response) => {
+    const documentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const rawFormat = Array.isArray(req.params.format) ? req.params.format[0] : req.params.format;
+    if (!isExportFormat(rawFormat)) {
+      res.status(400).json({ ok: false, message: "Unsupported export format." });
+      return;
+    }
+
+    const { doc } = await getDocumentForUser(req.user!.id, documentId);
+    const spreadsheet = doc.type === "sheet";
+    const supported = spreadsheet ? ["csv", "xlsx", "pdf"] : ["txt", "md", "html", "pdf", "docx"];
+    if (!supported.includes(rawFormat)) {
+      res.status(400).json({ ok: false, message: "That export format is not supported for this document type." });
+      return;
+    }
+
+    const html = getExportHtml(doc.content);
+    const text = htmlText(html);
+    let output: Buffer | string;
+    if (rawFormat === "txt") {
+      output = `${doc.title}\n\n${text}\n`;
+    } else if (rawFormat === "md") {
+      output = `# ${doc.title}\n\n${new TurndownService().turndown(html)}\n`;
+    } else if (rawFormat === "html") {
+      output = `<!doctype html><html><head><meta charset="utf-8"><title>${doc.title.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!)}</title></head><body><h1>${doc.title.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!)}</h1>${html}</body></html>`;
+    } else if (rawFormat === "pdf") {
+      output = await createPdf(doc.title, spreadsheet
+        ? spreadsheetRows(html).map((row) => row.join("\t")).join("\n")
+        : text);
+    } else if (rawFormat === "docx") {
+      const docx = await htmlToDocx(`<h1>${doc.title}</h1>${html}`);
+      output = Buffer.isBuffer(docx) ? docx : Buffer.from(await docx.arrayBuffer());
+    } else if (rawFormat === "csv") {
+      output = spreadsheetRows(html).map((row) => row.map(csvCell).join(",")).join("\r\n");
+    } else {
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet("Sheet1");
+      const rows = spreadsheetRows(html);
+      sheet.addRows(rows);
+      sheet.columns.forEach((column, index) => {
+        column.width = Math.min(60, Math.max(12, ...rows.map((row) => (row[index] ?? "").length + 2)));
+      });
+      output = Buffer.from(await workbook.xlsx.writeBuffer());
+    }
+
+    res.setHeader("Content-Type", EXPORTS[rawFormat].mime);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeFilename(doc.title, EXPORTS[rawFormat].extension)}"`);
+    res.send(output);
+  }));
+
   router.get("/:id", asyncHandler(async (req: Request, res: Response) => {
     const documentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
     const access = await getDocumentForUser(req.user!.id, documentId);
     res.json({
       ok: true,
-      document: await serializeDocument(access.doc, access.owner.name, access.owner.email, req.user!.id),
+      document: (await serializeDocuments([{ doc: access.doc, owner: access.owner }], req.user!.id))[0],
     });
   }));
 
@@ -385,7 +566,7 @@ export function registerDocumentRoutes(router: Router): void {
 
     res.json({
       ok: true,
-      document: await serializeDocument(updated, access.owner.name, access.owner.email, req.user!.id),
+      document: (await serializeDocuments([{ doc: updated, owner: access.owner }], req.user!.id))[0],
     });
   }));
 

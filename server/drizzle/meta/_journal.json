@@ -15,6 +15,13 @@
       "when": 1793888584943,
       "tag": "0001_naive_the_hunter",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793955587347,
+      "tag": "0002_ambiguous_shiver_man",
+      "breakpoints": true
     }
   ]
 }

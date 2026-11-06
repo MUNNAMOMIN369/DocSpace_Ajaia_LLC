@@ -1,7 +1,7 @@
 import { Copy, MoreHorizontal, Pencil, Share2, Star, Trash2, Download, ExternalLink } from "lucide-react";
-import { useApp } from "../lib/app-context";
+import { useApp, type ExportFormat } from "../lib/app-context";
 import { timeAgo, type DocItem } from "../lib/store";
-import { AvatarStack, DocIconBadge, DocTypeIcon, Dropdown, MenuDivider, MenuItem } from "./ui";
+import { AvatarStack, DocIconBadge, DocTypeIcon, Dropdown, MenuDivider, MenuItem, MenuLabel } from "./ui";
 import { cn } from "../utils/cn";
 
 export function typeLabel(t: DocItem["type"]) {
@@ -9,7 +9,10 @@ export function typeLabel(t: DocItem["type"]) {
 }
 
 export default function DocumentCard({ doc }: { doc: DocItem }) {
-  const { openDoc, toggleStar, deleteDoc, duplicateDoc, renameDoc, setShareDocId, pushToast } = useApp();
+  const { openDoc, toggleStar, deleteDoc, duplicateDoc, renameDoc, setShareDocId, exportDoc } = useApp();
+  const exportFormats: { format: ExportFormat; label: string }[] = doc.type === "sheet"
+    ? [{ format: "csv", label: "CSV" }, { format: "xlsx", label: "Excel workbook" }, { format: "pdf", label: "PDF" }]
+    : [{ format: "txt", label: "Plain text" }, { format: "md", label: "Markdown" }, { format: "html", label: "HTML" }, { format: "pdf", label: "PDF" }, { format: "docx", label: "Word document" }];
 
   return (
     <article
@@ -51,7 +54,11 @@ export default function DocumentCard({ doc }: { doc: DocItem }) {
                   if (t?.trim()) void renameDoc(doc.id, t.trim());
                 }} />
                 <MenuItem icon={<Copy className="h-4 w-4" />} label="Duplicate" onClick={() => duplicateDoc(doc.id)} />
-                <MenuItem icon={<Download className="h-4 w-4" />} label="Export PDF" onClick={() => pushToast({ title: "PDF export unavailable", description: "This build does not provide PDF export.", kind: "info" })} />
+                <MenuDivider />
+                <MenuLabel>Export as</MenuLabel>
+                {exportFormats.map(({ format, label }) => (
+                  <MenuItem key={format} icon={<Download className="h-4 w-4" />} label={label} onClick={() => void exportDoc(doc.id, format)} />
+                ))}
                 <MenuDivider />
                 <MenuItem icon={<Trash2 className="h-4 w-4" />} label="Delete permanently" danger onClick={() => {
                   if (window.confirm("Delete this document permanently? This cannot be undone.")) void deleteDoc(doc.id);

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "dotenv";
@@ -5,12 +6,19 @@ import { z } from "zod";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-config({ path: path.resolve(__dirname, "../../..", ".env") });
+const envFile = [
+  path.resolve(__dirname, "../../..", ".env"),
+  path.resolve(__dirname, "../../../..", ".env"),
+].find(existsSync);
+
+if (envFile) {
+  config({ path: envFile });
+}
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  NODE_ENV: z.enum(["development", "test", "production"]),
   PORT: z.coerce.number().int().positive().default(4000),
-  CLIENT_URL: z.string().default("http://localhost:5173"),
+  CLIENT_URL: z.string().url(),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required."),
   JWT_SECRET: z.string().min(12, "JWT_SECRET must be at least 12 characters."),
 });

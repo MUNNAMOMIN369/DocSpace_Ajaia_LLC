@@ -16,6 +16,7 @@ app.use(
     origin: env.CLIENT_URL,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    exposedHeaders: ["Content-Disposition"],
   })
 );
 app.use(helmet({ crossOriginResourcePolicy: false }));
@@ -38,12 +39,13 @@ app.get("/api/health", async (_req: Request, res: Response) => {
       database: "connected",
     });
   } catch (error) {
+    console.error("[health] Database connection verification failed:", error);
     res.status(503).json({
       ok: false,
       status: "degraded",
       environment: env.NODE_ENV,
       database: "unverified",
-      message: error instanceof Error ? error.message : "Database connection unavailable",
+      message: "Database connection unavailable",
     });
   }
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { relations } from "drizzle-orm";
-import { boolean, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { boolean, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: text("id").primaryKey().notNull().$defaultFn(() => randomUUID()),
@@ -23,7 +23,9 @@ export const documents = pgTable("documents", {
   isShared: boolean("is_shared").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  ownerIdIndex: index("documents_owner_id_idx").on(table.ownerId),
+}));
 
 export const documentCollaborators = pgTable("document_collaborators", {
   id: text("id").primaryKey().notNull().$defaultFn(() => randomUUID()),
@@ -37,6 +39,7 @@ export const documentCollaborators = pgTable("document_collaborators", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   documentUserUnique: uniqueIndex("document_collaborators_document_user_unique").on(table.documentId, table.userId),
+  userIdIndex: index("document_collaborators_user_id_idx").on(table.userId),
 }));
 
 export const documentPermissions = pgTable("document_permissions", {
@@ -49,7 +52,10 @@ export const documentPermissions = pgTable("document_permissions", {
     .references(() => users.id, { onDelete: "cascade" }),
   permission: text("permission").notNull().default("read"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  documentUserIndex: index("document_permissions_document_user_idx").on(table.documentId, table.userId),
+  userIdIndex: index("document_permissions_user_id_idx").on(table.userId),
+}));
 
 export const usersRelations = relations(users, ({ many }) => ({
   documents: many(documents),

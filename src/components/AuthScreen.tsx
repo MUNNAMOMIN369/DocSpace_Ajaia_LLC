@@ -189,7 +189,7 @@ export default function AuthScreen() {
                       className="input-premium focus-ring w-full rounded-xl py-2.5 pl-10 pr-11 text-[14px]"
                       placeholder="••••••••"
                       required
-                      minLength={6}
+                      minLength={8}
                     />
                     <button
                       type="button"

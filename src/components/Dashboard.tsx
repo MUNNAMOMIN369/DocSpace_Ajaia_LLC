@@ -45,7 +45,7 @@ function TemplateIcon({ icon }: { icon: string }) {
 
 export default function Dashboard() {
   const {
-    view, docs, search, sort, setSort, typeFilter, setTypeFilter, tagFilter, setTagFilter,
+    view, docs, documentsLoading, search, sort, setSort, typeFilter, setTypeFilter, tagFilter, setTagFilter,
     setUploadOpen, setCreateOpen, openDoc, toggleStar, deleteDoc,
   } = useApp();
   const [page, setPage] = useState(1);
@@ -219,7 +219,12 @@ export default function Dashboard() {
 
       {/* Results */}
       <div className="mt-5">
-        {filtered.length === 0 ? (
+        {documentsLoading && filtered.length === 0 ? (
+          <div className="flex items-center justify-center gap-3 rounded-2xl border border-border bg-white px-6 py-12 text-sm font-medium text-text-secondary" role="status">
+            <span className="spinner-orange h-5 w-5 rounded-full" />
+            Loading your documents…
+          </div>
+        ) : filtered.length === 0 ? (
           <EmptyState
             icon={search ? <SearchX className="h-6 w-6" /> : view === "starred" ? <Star className="h-6 w-6" /> : view === "trash" ? <Trash2 className="h-6 w-6" /> : <FilePlus2 className="h-6 w-6" />}
             title={search ? `No results for “${search}”` : view === "starred" ? "No starred documents yet" : view === "trash" ? "Trash recovery is unavailable" : view === "shared" ? "Nothing shared with you yet" : "No documents yet"}

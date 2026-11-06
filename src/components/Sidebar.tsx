@@ -13,7 +13,7 @@ const NAV = [
 ];
 
 export default function Sidebar() {
-  const { view, setView, docs, setUploadOpen, setCreateOpen, setUpgradeOpen, sidebarOpen, setSidebarOpen } = useApp();
+  const { view, setView, docs, storageUsage, storageLoading, storageError, refreshStorage, setUploadOpen, setCreateOpen, setUpgradeOpen, sidebarOpen, setSidebarOpen } = useApp();
 
   const counts: Record<string, number> = {
     home: docs.filter((d) => !d.trashed).length,
@@ -97,9 +97,27 @@ export default function Sidebar() {
           <div className="flex items-center gap-2">
             <FileText className="h-4 w-4 text-primary-hover" />
             <p className="text-[12.5px] font-bold text-text-primary">Storage</p>
-            <span className="ml-auto text-[11.5px] font-semibold text-text-secondary">Not tracked</span>
+            <button
+              onClick={() => void refreshStorage()}
+              className="ml-auto rounded px-1 text-[11.5px] font-semibold text-text-secondary hover:text-primary-hover"
+              aria-label="Refresh storage usage"
+              title="Refresh storage usage"
+            >
+              {storageLoading ? "Updating…" : storageUsage ? `${formatBytes(storageUsage.bytes)}` : "Refresh"}
+            </button>
           </div>
-          <p className="mt-2 text-[11.5px] text-text-muted">Storage usage is not available in this build.</p>
+          <p className="mt-1 text-[11.5px] text-text-muted" title={storageUsage?.basis}>
+            {storageError ? "Usage could not be refreshed." : storageUsage
+              ? `${storageUsage.documentCount} owned ${storageUsage.documentCount === 1 ? "document" : "documents"} · logical text data`
+              : storageLoading ? "Calculating owned document data…" : "Usage is not loaded."}
+          </p>
+          {storageUsage && Object.keys(storageUsage.byType).length > 0 && (
+            <p className="mt-1 truncate text-[10.5px] text-text-muted">
+              {Object.entries(storageUsage.byType)
+                .map(([type, value]) => `${type}: ${formatBytes(value.bytes)}`)
+                .join(" · ")}
+            </p>
+          )}
         </div>
         <button
           onClick={() => setUpgradeOpen(true)}
@@ -135,4 +153,16 @@ export default function Sidebar() {
       </div>
     </>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = -1;
+  do {
+    value /= 1024;
+    unitIndex += 1;
+  } while (value >= 1024 && unitIndex < units.length - 1);
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }

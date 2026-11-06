@@ -32,12 +32,6 @@ export function registerAuthRoutes(router: Router): void {
       const payload = signUpSchema.parse(req.body);
       const email = payload.email.toLowerCase();
 
-      const existingUser = await db.select().from(users).where(eq(users.email, email)).limit(1);
-      if (existingUser.length > 0) {
-        res.status(409).json({ ok: false, message: "An account with this email already exists." });
-        return;
-      }
-
       const passwordHash = await bcrypt.hash(payload.password, 12);
       const inserted = await db
         .insert(users)
@@ -46,6 +40,7 @@ export function registerAuthRoutes(router: Router): void {
           email,
           passwordHash,
         })
+        .onConflictDoNothing({ target: users.email })
         .returning({
           id: users.id,
           name: users.name,
@@ -53,6 +48,11 @@ export function registerAuthRoutes(router: Router): void {
         });
 
       const user = inserted[0];
+      if (!user) {
+        res.status(409).json({ ok: false, message: "An account with this email already exists." });
+        return;
+      }
+
       const token = signToken({ id: user.id, name: user.name, email: user.email });
       setSessionCookie(res, token);
 
