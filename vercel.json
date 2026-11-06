@@ -13,8 +13,7 @@
     "server": {
       "root": "server/",
       "framework": "express",
-      "buildCommand": "npm run build",
-      "entrypoint": "dist/src/index.js"
+      "entrypoint": "src/index.ts"
     }
   },
   "rewrites": [
