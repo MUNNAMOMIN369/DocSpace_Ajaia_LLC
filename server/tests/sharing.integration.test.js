@@ -10,11 +10,17 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL?.includes("neon.tech") ? { rejectUnauthorized: false } : undefined,
 });
+const authTimings = [];
 
 function createSession() {
   const cookies = new Map();
+  let lastSetCookie = "";
   return {
+    getLastSetCookie() {
+      return lastSetCookie;
+    },
     async request(method, path, payload, expectedStatus) {
+      const startedAt = performance.now();
       const headers = payload ? { "Content-Type": "application/json" } : {};
       if (cookies.size) {
         headers.Cookie = [...cookies.entries()].map(([key, value]) => `${key}=${value}`).join("; ");
@@ -28,9 +34,13 @@ function createSession() {
       const rawBody = await response.text();
       const setCookie = response.headers.get("set-cookie");
       if (setCookie) {
+        lastSetCookie = setCookie;
         const cookiePair = setCookie.split(";", 1)[0];
         const equals = cookiePair.indexOf("=");
         cookies.set(cookiePair.slice(0, equals), cookiePair.slice(equals + 1));
+      }
+      if (path === "/api/auth/signup" || path === "/api/auth/login" || path === "/api/auth/me" || path === "/api/auth/logout") {
+        authTimings.push({ method, path, milliseconds: Number((performance.now() - startedAt).toFixed(1)) });
       }
 
       let body;
@@ -67,15 +77,68 @@ try {
   const loginSession = createSession();
   const unauthenticatedSession = createSession();
 
+  await ownerSession.request("POST", "/api/auth/signup", {}, 400);
+  await ownerSession.request("POST", "/api/auth/signup", {
+    name: "Invalid Email",
+    email: "not-an-email",
+    password: `Valid-${randomUUID()}!`,
+  }, 400);
+  await ownerSession.request("POST", "/api/auth/signup", {
+    name: "A",
+    email: `short-name-${randomUUID()}@example.test`,
+    password: `Valid-${randomUUID()}!`,
+  }, 400);
+  await ownerSession.request("POST", "/api/auth/signup", {
+    name: "Weak Password",
+    email: `weak-password-${randomUUID()}@example.test`,
+    password: "short",
+  }, 400);
+  await ownerSession.request("POST", "/api/auth/login", {
+    email: "not-an-email",
+    password: `Valid-${randomUUID()}!`,
+  }, 400);
+  await loginSession.request("POST", "/api/auth/login", {
+    email: `missing-user-${randomUUID()}@example.test`,
+    password: `Valid-${randomUUID()}!`,
+  }, 401);
+
   await ownerSession.request("POST", "/api/auth/signup", alice, 201);
+  const signupCookie = ownerSession.getLastSetCookie();
+  assert.match(signupCookie, /HttpOnly/i);
+  assert.match(signupCookie, /SameSite=Lax/i);
+  assert.match(signupCookie, /Max-Age=604800/i);
+  const storedPassword = await pool.query("SELECT password_hash FROM users WHERE email = $1", [alice.email.toLowerCase()]);
+  assert.equal(storedPassword.rowCount, 1);
+  assert.match(storedPassword.rows[0].password_hash, /^\$2[aby]\$12\$/);
+  assert.notEqual(storedPassword.rows[0].password_hash, alice.password);
+
+  const duplicate = await ownerSession.request("POST", "/api/auth/signup", {
+    ...alice,
+    email: alice.email.toUpperCase(),
+  }, 409);
+  assert.equal(duplicate.ok, false);
   await collaboratorSession.request("POST", "/api/auth/signup", bob, 201);
+  await loginSession.request("POST", "/api/auth/login", {
+    email: alice.email,
+    password: "Incorrect-password-123!",
+  }, 401);
+  await loginSession.request("POST", "/api/auth/login", {
+    email: alice.email,
+    password: alice.password,
+  }, 200);
+  const loginCookie = loginSession.getLastSetCookie();
+  assert.match(loginCookie, /HttpOnly/i);
+  assert.match(loginCookie, /SameSite=Lax/i);
+  assert.match(loginCookie, /Max-Age=604800/i);
+  await loginSession.request("GET", "/api/auth/me", undefined, 200);
+  await loginSession.request("POST", "/api/auth/logout", undefined, 200);
+  await loginSession.request("GET", "/api/auth/me", undefined, 401);
   await loginSession.request("POST", "/api/auth/login", {
     email: alice.email,
     password: alice.password,
   }, 200);
   await loginSession.request("GET", "/api/auth/me", undefined, 200);
   await loginSession.request("POST", "/api/auth/logout", undefined, 200);
-  await loginSession.request("GET", "/api/auth/me", undefined, 401);
 
   await unauthenticatedSession.request("GET", "/api/documents", undefined, 401);
   const created = await ownerSession.request("POST", "/api/documents", {
@@ -156,6 +219,7 @@ try {
   documentId = undefined;
 
   console.log("SHARING INTEGRATION TESTS PASSED");
+  console.log("AUTH API response timings (ms):", JSON.stringify(authTimings));
 } finally {
   try {
     if (process.env.DATABASE_URL) {
